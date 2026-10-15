@@ -1,0 +1,24 @@
+{
+  "name": "business-os",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Role-based business management system",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "create-admin": "node scripts/create-admin.js",
+    "reset-password": "node scripts/reset-password.js",
+    "check": "node --check server.js && node --check middleware/auth.js && node --check middleware/permissions.js && node --check routes/auth.js && node --check routes/resources.js && node --check scripts/unify-business-os.js && node --check scripts/reset-password.js",
+    "unify-database": "node scripts/unify-business-os.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "connect-pg-simple": "^10.0.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "pdfkit": "^0.20.2",
+    "pg": "^8.13.1"
+  }
+}
