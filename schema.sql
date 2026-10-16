@@ -34,3 +34,16 @@ INSERT INTO role_permissions(role,permission_id) SELECT 'GODOWN_MANAGER',id FROM
 INSERT INTO role_permissions(role,permission_id) SELECT 'ACCOUNTANT',id FROM permissions WHERE permission_code IN ('VIEW_INVENTORY','MANAGE_FINANCIALS','VIEW_AUDIT');
 INSERT INTO role_permissions(role,permission_id) SELECT 'DELIVERY_MANAGER',id FROM permissions WHERE permission_code IN ('MANAGE_DELIVERIES');
 INSERT INTO role_permissions(role,permission_id) SELECT 'HR',id FROM permissions WHERE permission_code IN ('MANAGE_USERS','VIEW_ATTENDANCE','MANAGE_ATTENDANCE');
+-- Indexes for dashboard, report and location-scoped queries (also applied on boot by server.js).
+CREATE INDEX sales_store_date_idx ON sales(store_id, sale_date);
+CREATE INDEX sales_sale_date_idx ON sales(sale_date);
+CREATE INDEX sales_created_by_idx ON sales(created_by);
+CREATE INDEX sale_items_sale_idx ON sale_items(sale_id);
+CREATE INDEX sale_items_product_idx ON sale_items(product_id);
+CREATE INDEX inventory_store_idx ON inventory(store_id);
+CREATE INDEX inventory_godown_idx ON inventory(godown_id);
+CREATE INDEX expenses_date_idx ON expenses(expense_date);
+CREATE INDEX attendance_date_idx ON attendance_records(date);
+CREATE INDEX deliveries_status_idx ON deliveries(status);
+CREATE INDEX stock_transfers_status_idx ON stock_transfers(status);
+CREATE INDEX audit_logs_created_at_idx ON audit_logs(created_at DESC);

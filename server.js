@@ -13,16 +13,26 @@ const productRoutes = require("./routes/products");
 const { requireAuth } = require("./middleware/auth");
 const { requirePermission } = require("./middleware/permissions");
 
+const isProduction = process.env.NODE_ENV === "production";
+const sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret) {
+  if (isProduction) {
+    console.error("[config] SESSION_SECRET must be set in production. Refusing to start.");
+    process.exit(1);
+  }
+  console.warn("[config] SESSION_SECRET is not set; using an insecure development-only secret.");
+}
+
 const app = express();
 app.locals.pool = pool;
 app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 app.use(session({
   store: new pgSession({ pool, tableName: "user_sessions", createTableIfMissing: true }),
-  secret: process.env.SESSION_SECRET || "replace-this-before-use",
+  secret: sessionSecret || "dev-only-insecure-secret",
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", maxAge: 1000 * 60 * 60 * 8 },
+  cookie: { httpOnly: true, sameSite: "lax", secure: isProduction, maxAge: 1000 * 60 * 60 * 8 },
 }));
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/api/auth", authRoutes);
@@ -30,8 +40,13 @@ app.use("/api", resources);
 app.use("/api/reports", reportsRoutes);
 app.use("/api/products", productRoutes);
 app.get("/api/health", async (_req, res) => {
-  await pool.query("SELECT 1");
-  res.json({ success: true, message: "Retail Business OS is running" });
+  try {
+    await pool.query("SELECT 1");
+    res.json({ success: true, message: "Retail Business OS is running" });
+  } catch (err) {
+    console.error("Health check failed:", err.message);
+    res.status(503).json({ success: false, message: "Database unavailable" });
+  }
 });
 app.get("/api/health/database", async (_req, res) => {
   try {
@@ -64,7 +79,6 @@ const port = Number(process.env.PORT || 3000);
 //   Manager        -> (their own location only, enforced in routes)
 //   HR             -> people (users + attendance)
 //   Delivery       -> drivers, vehicles and deliveries
-//   Manager
 // Legacy permission codes not listed here are left untouched.
 const PERMISSION_MATRIX = [
   { role: "ADMIN", permissions: ["MANAGE_PRODUCTS", "MANAGE_STORES", "MANAGE_GODOWNS", "MANAGE_USERS", "VIEW_INVENTORY", "MANAGE_TRANSFERS", "MANAGE_DELIVERIES", "MANAGE_SALES", "MANAGE_FINANCIALS", "VIEW_ATTENDANCE", "MANAGE_ATTENDANCE", "VIEW_AUDIT"] },
@@ -87,20 +101,22 @@ async function syncPermissionMatrix() {
         (SELECT id FROM permissions WHERE permission_code = ANY($1::text[]))`,
       [managedCodes]
     );
-    for (const { role, permissions } of PERMISSION_MATRIX) {
-      for (const code of permissions) {
-        await client.query(
-          `INSERT INTO role_permissions(role, permission_id)
-           SELECT $1, id FROM permissions WHERE permission_code = $2`,
-          [role, code]
-        );
-      }
-    }
+    // One round trip for the whole matrix instead of one INSERT per grant.
+    const pairs = PERMISSION_MATRIX.flatMap(({ role, permissions }) => permissions.map((code) => [role, code]));
+    await client.query(
+      `INSERT INTO role_permissions(role, permission_id)
+       SELECT m.role, p.id
+       FROM unnest($1::text[], $2::text[]) AS m(role, code)
+       JOIN permissions p ON p.permission_code = m.code
+       ON CONFLICT DO NOTHING`,
+      [pairs.map(([role]) => role), pairs.map(([, code]) => code)]
+    );
     await client.query("COMMIT");
     console.log(`[db] Role permission matrix synced for ${PERMISSION_MATRIX.length} roles`);
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error("[db] Permission matrix sync failed:", err.message);
+    // Starting with a half-synced matrix could grant or deny the wrong access.
+    throw new Error(`Permission matrix sync failed: ${err.message}`);
   } finally {
     client.release();
   }
@@ -134,6 +150,19 @@ const schemaUpdates = [
   "ALTER TABLE deliveries ADD COLUMN IF NOT EXISTS delivery_address TEXT",
   "ALTER TABLE deliveries ADD COLUMN IF NOT EXISTS requested_date DATE",
   "ALTER TABLE deliveries ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id)",
+  // Indexes for the columns that dashboards, reports and scoped lists filter on.
+  "CREATE INDEX IF NOT EXISTS sales_store_date_idx ON sales(store_id, sale_date)",
+  "CREATE INDEX IF NOT EXISTS sales_sale_date_idx ON sales(sale_date)",
+  "CREATE INDEX IF NOT EXISTS sales_created_by_idx ON sales(created_by)",
+  "CREATE INDEX IF NOT EXISTS sale_items_sale_idx ON sale_items(sale_id)",
+  "CREATE INDEX IF NOT EXISTS sale_items_product_idx ON sale_items(product_id)",
+  "CREATE INDEX IF NOT EXISTS inventory_store_idx ON inventory(store_id)",
+  "CREATE INDEX IF NOT EXISTS inventory_godown_idx ON inventory(godown_id)",
+  "CREATE INDEX IF NOT EXISTS expenses_date_idx ON expenses(expense_date)",
+  "CREATE INDEX IF NOT EXISTS attendance_date_idx ON attendance_records(date)",
+  "CREATE INDEX IF NOT EXISTS deliveries_status_idx ON deliveries(status)",
+  "CREATE INDEX IF NOT EXISTS stock_transfers_status_idx ON stock_transfers(status)",
+  "CREATE INDEX IF NOT EXISTS audit_logs_created_at_idx ON audit_logs(created_at DESC)",
 ];
 
 // Verify database connectivity before accepting traffic so that
@@ -155,7 +184,7 @@ pool.query("SELECT current_database() AS db, current_user AS usr")
     );
   })
   .catch((err) => {
-    console.error("[db] Cannot connect to PostgreSQL:", err.message);
+    console.error("[db] Startup failed:", err.message);
     console.error("     Check DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD in your .env");
     process.exit(1);
   });
